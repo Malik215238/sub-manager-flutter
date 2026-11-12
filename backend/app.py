@@ -9,8 +9,12 @@ import os
 app = Flask(__name__)
 CORS(app) # Разрешаем запросы с любых источников (нужно для Flutter)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_NAME = os.path.join(BASE_DIR, 'subscriptions.db')
+if os.path.exists('/data'):
+    DB_NAME = '/data/subscriptions.db'
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DB_NAME = os.path.join(BASE_DIR, 'subscriptions.db')
+
 
 
 def get_db_connection():
