@@ -1,23 +1,46 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart'; // Для форматирования даты (yyyy-MM-dd)
+import 'package:intl/intl.dart'; // Для работы с датами и форматированием
 
 void main() {
   runApp(const MyApp());
 }
 
+// ==================== НАСТРОЙКА ТЕМЫ (STRICT STYLE) ====================
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Менеджер подписок',
+      title: 'Sub Manager',
       debugShowCheckedModeBanner: false,
+      // Настраиваем тёмную тему "под Сбер/Финтех"
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
+        brightness: Brightness.dark, // Глобальная тёмная основа
+        scaffoldBackgroundColor: const Color(0xFF121212), // Глубокий чёрный фон
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF21A038), // Изумрудно-зелёный акцент
+          secondaryContainer: Color(0xFF1E1E1E), // Тёмно-серый для карточек
+          surface: Color(0xFF1E1E1E),
+          onSurface: Colors.white, // Белый текст
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF121212),
+          elevation: 0,
+          titleTextStyle: TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        // Стиль для плавающей кнопки
+        floatingActionButtonTheme: const FloatingActionButtonThemeData(
+          backgroundColor: Color(0xFF21A038),
+          foregroundColor: Colors.white,
+        ),
       ),
       home: const SubscriptionsScreen(),
     );
@@ -30,7 +53,7 @@ class Subscription {
   final String name;
   final double price;
   final String status;
-  final String nextPaymentDate; // Новое поле: дата следующего списания
+  final String nextPaymentDate;
 
   Subscription({
     required this.id,
@@ -69,10 +92,9 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
   @override
   void initState() {
     super.initState();
-    _loadSubscriptions(); // Загружаем данные при первом открытии экрана
+    _loadSubscriptions();
   }
 
-  // Метод для загрузки списка и обновления состояния экрана
   Future<void> _loadSubscriptions() async {
     setState(() {
       _isLoading = true;
@@ -88,133 +110,128 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
           _isLoading = false;
         });
       } else {
-        throw Exception('Ошибка сервера: ${response.statusCode}');
+        throw Exception('Ошибка сервера');
       }
     } catch (e) {
       setState(() {
-        _errorMessage = 'Не удалось подключиться к серверу. Проверьте, запущен ли Flask.';
+        _errorMessage = 'Нет связи с сервером';
         _isLoading = false;
       });
     }
   }
 
-  // Метод для ОТПРАВКИ POST-запроса (создание)
+  // Логика добавления (POST)
   Future<void> _addSubscription(String name, double price, String date) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/subscriptions'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'name': name,
-          'price': price,
-          'next_payment_date': date,
-        }),
+        body: jsonEncode({'name': name, 'price': price, 'next_payment_date': date}),
       );
-
       if (response.statusCode == 201) {
-        // Если успешно, закрываем диалог и перезагружаем список
         Navigator.pop(context);
         _loadSubscriptions();
-      } else {
-        throw Exception('Ошибка при создании: ${response.statusCode}');
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
     }
   }
 
-  // Метод для ОТПРАВКИ DELETE-запроса (удаление)
+  // Логика удаления (DELETE)
   Future<void> _deleteSubscription(int id) async {
     try {
       final response = await http.delete(Uri.parse('$_baseUrl/api/subscriptions/$id'));
-      if (response.statusCode == 200) {
-        _loadSubscriptions(); // Перезагружаем список после успешного удаления
-      } else {
-        throw Exception('Ошибка при удалении');
-      }
+      if (response.statusCode == 200) _loadSubscriptions();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
     }
   }
 
-  // ==================== ДИАЛОГ ДОБАВЛЕНИЯ ====================
+  // ==================== РАСЧЁТ СВОДКИ И ДАТ ====================
+  
+  // Считаем общую сумму всех подписок
+  double get _totalAmount {
+    return _subscriptions.fold(0.0, (sum, item) => sum + item.price);
+  }
+
+  // Определяем статус срочности платежа
+  Map<String, dynamic> _getUrgencyStatus(String dateStr) {
+    final now = DateTime.now();
+    // Парсим дату из строки "YYYY-MM-DD" в объект DateTime
+    final paymentDate = DateTime.parse(dateStr);
+    
+    // Сравниваем только даты (без времени), обнуляя время до полуночи
+    final diff = paymentDate.difference(DateTime(now.year, now.month, now.day)).inDays;
+
+    if (diff < 0) {
+      return {'text': 'Просрочено', 'color': Colors.redAccent, 'border': Colors.redAccent};
+    } else if (diff == 0) {
+      return {'text': 'Списание сегодня', 'color': Colors.orange, 'border': Colors.orange};
+    } else if (diff <= 3) {
+      return {'text': 'Скоро списание', 'color': Colors.orangeAccent, 'border': Colors.orangeAccent};
+    } else {
+      return {'text': '', 'color': Colors.transparent, 'border': Colors.grey.shade800};
+    }
+  }
+
+  // ==================== UI: ДИАЛОГ ДОБАВЛЕНИЯ ====================
   void _showAddSubscriptionDialog() {
     final nameController = TextEditingController();
     final priceController = TextEditingController();
-    DateTime? selectedDate; // Хранит выбранную дату
+    DateTime? selectedDate;
 
     showDialog(
       context: context,
       builder: (context) {
-        // StatefulBuilder нужен, чтобы обновлять текст кнопки с датой 
-        // внутри открытого диалога, не закрывая его.
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              title: const Text('Новая подписка'),
+              backgroundColor: const Color(0xFF1E1E1E),
+              title: const Text('Новая подписка', style: TextStyle(color: Colors.white)),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     TextField(
                       controller: nameController,
-                      decoration: const InputDecoration(labelText: 'Название (напр. Netflix)'),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(labelText: 'Название', labelStyle: TextStyle(color: Colors.grey)),
                     ),
-                    const SizedBox(height: 12),
                     TextField(
                       controller: priceController,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Цена (напр. 10.99)'),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(labelText: 'Цена', labelStyle: TextStyle(color: Colors.grey)),
                     ),
                     const SizedBox(height: 12),
-                    // Кнопка выбора даты
                     OutlinedButton.icon(
-                      icon: const Icon(Icons.calendar_today),
-                      label: Text(
-                        selectedDate == null
-                            ? 'Выбрать дату списания'
-                            : DateFormat('yyyy-MM-dd').format(selectedDate!),
-                      ),
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.grey)),
+                      icon: const Icon(Icons.calendar_today, size: 18),
+                      label: Text(selectedDate == null ? 'Выбрать дату' : DateFormat('yyyy-MM-dd').format(selectedDate!)),
                       onPressed: () async {
                         final picked = await showDatePicker(
                           context: context,
                           initialDate: DateTime.now().add(const Duration(days: 30)),
                           firstDate: DateTime.now(),
                           lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
+                          builder: (context, child) {
+                            // Делаем календарь тёмным
+                            return Theme(data: ThemeData.dark(), child: child!);
+                          },
                         );
-                        if (picked != null) {
-                          // Обновляем состояние ТОЛЬКО внутри диалога
-                          setDialogState(() => selectedDate = picked);
-                        }
+                        if (picked != null) setDialogState(() => selectedDate = picked);
                       },
                     ),
                   ],
                 ),
               ),
               actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context), // Закрыть без сохранения
-                  child: const Text('Отмена'),
-                ),
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена', style: TextStyle(color: Colors.grey))),
                 ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF21A038)),
                   onPressed: () {
-                    // Простая валидация перед отправкой
-                    if (nameController.text.isEmpty || priceController.text.isEmpty || selectedDate == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Заполните все поля и выберите дату')),
-                      );
-                      return;
-                    }
-                    
-                    final price = double.tryParse(priceController.text) ?? 0.0;
-                    final formattedDate = DateFormat('yyyy-MM-dd').format(selectedDate!);
-                    
-                    // Вызываем метод отправки POST-запроса
-                    _addSubscription(nameController.text, price, formattedDate);
+                    if (nameController.text.isEmpty || priceController.text.isEmpty || selectedDate == null) return;
+                    _addSubscription(nameController.text, double.tryParse(priceController.text) ?? 0.0, DateFormat('yyyy-MM-dd').format(selectedDate!));
                   },
                   child: const Text('Сохранить'),
                 ),
@@ -229,30 +246,37 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Мои подписки'),
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-      ),
+      appBar: AppBar(title: const Text('Мои подписки')),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFF21A038)))
           : _errorMessage != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Text(_errorMessage!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
+              ? Center(child: Text(_errorMessage!, style: const TextStyle(color: Colors.red)))
+              : RefreshIndicator(
+                  onRefresh: _loadSubscriptions,
+                  color: const Color(0xFF21A038),
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      // 1. СВОДНАЯ КАРТОЧКА (DASHBOARD)
+                      _buildSummaryCard(),
+                      const SizedBox(height: 20),
+                      
+                      // Заголовок списка
+                      const Padding(
+                        padding: EdgeInsets.only(left: 4, bottom: 8),
+                        child: Text('Активные сервисы', style: TextStyle(fontSize: 16, color: Colors.grey, fontWeight: FontWeight.w500)),
+                      ),
+
+                      // 2. СПИСОК ПОДПИСОК
+                      if (_subscriptions.isEmpty)
+                        const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('Список пуст', style: TextStyle(color: Colors.grey))))
+                      else
+                        ..._subscriptions.map((sub) => _buildSubscriptionCard(sub)).toList(),
+                      
+                      const SizedBox(height: 80), // Отступ снизу для FAB
+                    ],
                   ),
-                )
-              : _subscriptions.isEmpty
-                  ? const Center(child: Text('Подписок пока нет. Добавьте первую!'))
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(12),
-                      itemCount: _subscriptions.length,
-                      itemBuilder: (context, index) {
-                        final sub = _subscriptions[index];
-                        return _buildSubscriptionCard(sub);
-                      },
-                    ),
-      // Плавающая кнопка "+" для добавления
+                ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showAddSubscriptionDialog,
         child: const Icon(Icons.add),
@@ -260,62 +284,118 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     );
   }
 
-  // ==================== КАРТОЧКА ПОДПИСКИ ====================
+  // ==================== ВИДЖЕТ: СВОДНАЯ КАРТОЧКА ====================
+  Widget _buildSummaryCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF21A038).withOpacity(0.3), width: 1),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Общие расходы / мес', style: TextStyle(color: Colors.grey, fontSize: 14)),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '\$${_totalAmount.toStringAsFixed(2)}',
+                style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF21A038).withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${_subscriptions.length} сервисов',
+                  style: const TextStyle(color: Color(0xFF21A038), fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==================== ВИДЖЕТ: КАРТОЧКА ПОДПИСКИ ====================
   Widget _buildSubscriptionCard(Subscription sub) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    final urgency = _getUrgencyStatus(sub.nextPaymentDate);
+    final isUrgent = urgency['text'].isNotEmpty;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(12),
+        // Если срочно — красная/оранжевая рамка, иначе — тонкая серая
+        border: Border.all(color: urgency['border'], width: isUrgent ? 1.5 : 1),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
           children: [
+            // Иконка с первой буквой
             CircleAvatar(
               radius: 24,
-              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+              backgroundColor: isUrgent ? urgency['color'].withOpacity(0.15) : const Color(0xFF21A038).withOpacity(0.15),
               child: Text(
-                sub.name.isNotEmpty ? sub.name[0].toUpperCase() : '?',
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                sub.name[0].toUpperCase(),
+                style: TextStyle(color: isUrgent ? urgency['color'] : const Color(0xFF21A038), fontWeight: FontWeight.bold),
               ),
             ),
             const SizedBox(width: 16),
+            
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    sub.name,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
+                  Text(sub.name, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
-                  // Отображение даты следующего списания
+                  // Дата следующего списания
                   Row(
                     children: [
-                      const Icon(Icons.event, size: 14, color: Colors.grey),
+                      Icon(Icons.event, size: 14, color: Colors.grey.shade500),
                       const SizedBox(width: 4),
-                      Text(
-                        'Списание: ${sub.nextPaymentDate}',
-                        style: const TextStyle(fontSize: 13, color: Colors.grey),
-                      ),
+                      Text(sub.nextPaymentDate, style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
                     ],
                   ),
+                  // Бейдж срочности (если есть)
+                  if (isUrgent) ...[
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: urgency['color'].withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        urgency['text'],
+                        style: TextStyle(color: urgency['color'], fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
-            // Блок с ценой и кнопкой удаления
+
+            // Цена и кнопка удаления
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text(
-                  '\$${sub.price.toStringAsFixed(2)}',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+                Text('\$${sub.price.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
-                // Иконка корзины для DELETE-запроса
                 IconButton(
-                  icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                  icon: const Icon(Icons.delete_outline, size: 20),
+                  color: Colors.grey.shade600,
                   onPressed: () => _deleteSubscription(sub.id),
-                  tooltip: 'Удалить подписку',
                 ),
               ],
             ),
