@@ -1,13 +1,14 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart'; // Для работы с датами и форматированием
+import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
-// ==================== НАСТРОЙКА ТЕМЫ (STRICT STYLE) ====================
+// ==================== НАСТРОЙКА ТЕМЫ ====================
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
@@ -16,33 +17,247 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Sub Manager',
       debugShowCheckedModeBanner: false,
-      // Настраиваем тёмную тему "под Сбер/Финтех"
       theme: ThemeData(
         useMaterial3: true,
-        brightness: Brightness.dark, // Глобальная тёмная основа
-        scaffoldBackgroundColor: const Color(0xFF121212), // Глубокий чёрный фон
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF121212),
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF21A038), // Изумрудно-зелёный акцент
-          secondaryContainer: Color(0xFF1E1E1E), // Тёмно-серый для карточек
+          primary: Color(0xFF21A038),
+          secondaryContainer: Color(0xFF1E1E1E),
           surface: Color(0xFF1E1E1E),
-          onSurface: Colors.white, // Белый текст
+          onSurface: Colors.white,
         ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF121212),
           elevation: 0,
-          titleTextStyle: TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
+          titleTextStyle: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
         ),
-        // Стиль для плавающей кнопки
         floatingActionButtonTheme: const FloatingActionButtonThemeData(
           backgroundColor: Color(0xFF21A038),
           foregroundColor: Colors.white,
         ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFF2A2A2A),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+          labelStyle: const TextStyle(color: Colors.grey),
+        ),
       ),
-      home: const SubscriptionsScreen(),
+      home: const AuthWrapper(), // Точка входа: проверяем сессию
+    );
+  }
+}
+
+// ==================== УПРАВЛЕНИЕ СЕССИЕЙ (AuthWrapper) ====================
+class AuthWrapper extends StatefulWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
+  bool _isLoading = true;
+  int? _userId;
+  String? _username;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkLoginStatus();
+  }
+
+  // Проверяем, есть ли сохранённые данные пользователя
+  Future<void> _checkLoginStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _userId = prefs.getInt('user_id');
+      _username = prefs.getString('username');
+      _isLoading = false;
+    });
+  }
+
+  // Выход из аккаунта
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('user_id');
+    await prefs.remove('username');
+    setState(() {
+      _userId = null;
+      _username = null;
+    });
+  }
+
+  // ЭТОТ МЕТОД ВЫЗЫВАЕТСЯ ИЗ AuthScreen ПОСЛЕ УСПЕШНОГО ВХОДА
+  // Он перечитывает SharedPreferences и заставляет экран перерисоваться
+  void _onAuthSuccess() {
+    _checkLoginStatus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator(color: Color(0xFF21A038))));
+    }
+
+    // Если данные есть — показываем главный экран
+    if (_userId != null && _username != null) {
+      return SubscriptionsScreen(
+        userId: _userId!,
+        username: _username!,
+        onLogout: _logout,
+      );
+    } 
+    
+    // Если данных нет — показываем экран входа и передаём ему callback
+    return AuthScreen(onAuthSuccess: _onAuthSuccess);
+  }
+}
+
+// ==================== ЭКРАН ВХОДА / РЕГИСТРАЦИИ ====================
+class AuthScreen extends StatefulWidget {
+  final VoidCallback onAuthSuccess; // Callback для уведомления родителя об успехе
+
+  const AuthScreen({super.key, required this.onAuthSuccess});
+
+  @override
+  State<AuthScreen> createState() => _AuthScreenState();
+}
+
+class _AuthScreenState extends State<AuthScreen> {
+  bool _isLogin = true;
+  final _formKey = GlobalKey<FormState>();
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+
+  static const String _baseUrl = 'http://10.0.2.2:5000';
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+    final url = _isLogin ? '$_baseUrl/api/login' : '$_baseUrl/api/register';
+
+    try {
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': _usernameController.text.trim(),
+          'password': _passwordController.text,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      // Проверяем успешный статус (200 для входа, 201 для регистрации)
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        // 1. Сохраняем данные в постоянную память телефона
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('user_id', data['user_id'] as int);
+        await prefs.setString('username', data['username'] as String);
+
+        // 2. Уведомляем AuthWrapper, что пора обновить экран
+        if (mounted) {
+          widget.onAuthSuccess();
+        }
+      } else {
+        // Показываем ошибку от сервера (например, "Пользователь уже существует")
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(data['error'] ?? 'Ошибка авторизации'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      // Показываем ошибку сети
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка сети: проверьте, запущен ли сервер'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      // Снимаем флаг загрузки, если виджет всё ещё в дереве
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.lock_outline, size: 64, color: Color(0xFF21A038)),
+                const SizedBox(height: 16),
+                const Text(
+                  'Sub Manager',
+                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Color(0xFF21A038)),
+                ),
+                const SizedBox(height: 40),
+                
+                TextFormField(
+                  controller: _usernameController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(labelText: 'Логин', prefixIcon: Icon(Icons.person, color: Colors.grey)),
+                  validator: (v) => v == null || v.trim().isEmpty ? 'Введите логин' : null,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(labelText: 'Пароль', prefixIcon: Icon(Icons.lock, color: Colors.grey)),
+                  validator: (v) => v == null || v.isEmpty ? 'Введите пароль' : null,
+                ),
+                const SizedBox(height: 32),
+                
+                // ИСПРАВЛЕНИЕ 1: Явный белый цвет текста и жирный шрифт на зелёной кнопке
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF21A038),
+                    foregroundColor: Colors.white, // Гарантирует белый цвет текста
+                    textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), // Жирный шрифт
+                    minimumSize: const Size(double.infinity, 50),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onPressed: _isLoading ? null : _submit,
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                        )
+                      : Text(_isLogin ? 'Войти' : 'Зарегистрироваться'),
+                ),
+                const SizedBox(height: 20),
+                
+                TextButton(
+                  onPressed: () => setState(() => _isLogin = !_isLogin),
+                  child: Text(
+                    _isLogin ? 'Нет аккаунта? Создать' : 'Уже есть аккаунт? Войти',
+                    style: const TextStyle(color: Colors.grey, fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -74,9 +289,18 @@ class Subscription {
   }
 }
 
-// ==================== ГЛАВНЫЙ ЭКРАН ====================
+// ==================== ГЛАВНЫЙ ЭКРАН (С УЧЁТОМ USER_ID) ====================
 class SubscriptionsScreen extends StatefulWidget {
-  const SubscriptionsScreen({super.key});
+  final int userId;
+  final String username;
+  final VoidCallback onLogout;
+
+  const SubscriptionsScreen({
+    super.key,
+    required this.userId,
+    required this.username,
+    required this.onLogout,
+  });
 
   @override
   State<SubscriptionsScreen> createState() => _SubscriptionsScreenState();
@@ -84,10 +308,8 @@ class SubscriptionsScreen extends StatefulWidget {
 
 class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
   static const String _baseUrl = 'http://10.0.2.2:5000';
-
   List<Subscription> _subscriptions = [];
   bool _isLoading = true;
-  String? _errorMessage;
 
   @override
   void initState() {
@@ -96,13 +318,10 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
   }
 
   Future<void> _loadSubscriptions() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-
+    setState(() => _isLoading = true);
     try {
-      final response = await http.get(Uri.parse('$_baseUrl/api/subscriptions'));
+      // ИСПРАВЛЕНИЕ 2: Передаём user_id в параметрах запроса
+      final response = await http.get(Uri.parse('$_baseUrl/api/subscriptions?user_id=${widget.userId}'));
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
         setState(() {
@@ -113,69 +332,74 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
         throw Exception('Ошибка сервера');
       }
     } catch (e) {
-      setState(() {
-        _errorMessage = 'Нет связи с сервером';
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось загрузить данные'), backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
-  // Логика добавления (POST)
   Future<void> _addSubscription(String name, double price, String date) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/subscriptions'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'name': name, 'price': price, 'next_payment_date': date}),
+        body: jsonEncode({
+          'user_id': widget.userId, // Привязываем подписку к текущему пользователю
+          'name': name,
+          'price': price,
+          'next_payment_date': date,
+        }),
       );
       if (response.statusCode == 201) {
-        Navigator.pop(context);
+        if (mounted) Navigator.pop(context);
         _loadSubscriptions();
+      } else {
+        throw Exception('Ошибка создания');
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
-  // Логика удаления (DELETE)
   Future<void> _deleteSubscription(int id) async {
     try {
       final response = await http.delete(Uri.parse('$_baseUrl/api/subscriptions/$id'));
-      if (response.statusCode == 200) _loadSubscriptions();
+      if (response.statusCode == 200) {
+        _loadSubscriptions();
+      } else {
+        throw Exception('Ошибка удаления');
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
-  // ==================== РАСЧЁТ СВОДКИ И ДАТ ====================
-  
-  // Считаем общую сумму всех подписок
-  double get _totalAmount {
-    return _subscriptions.fold(0.0, (sum, item) => sum + item.price);
-  }
+  // Логика расчёта сводки
+  double get _totalAmount => _subscriptions.fold(0.0, (sum, item) => sum + item.price);
 
-  // Определяем статус срочности платежа
   Map<String, dynamic> _getUrgencyStatus(String dateStr) {
     final now = DateTime.now();
-    // Парсим дату из строки "YYYY-MM-DD" в объект DateTime
     final paymentDate = DateTime.parse(dateStr);
-    
-    // Сравниваем только даты (без времени), обнуляя время до полуночи
     final diff = paymentDate.difference(DateTime(now.year, now.month, now.day)).inDays;
-
-    if (diff < 0) {
-      return {'text': 'Просрочено', 'color': Colors.redAccent, 'border': Colors.redAccent};
-    } else if (diff == 0) {
-      return {'text': 'Списание сегодня', 'color': Colors.orange, 'border': Colors.orange};
-    } else if (diff <= 3) {
-      return {'text': 'Скоро списание', 'color': Colors.orangeAccent, 'border': Colors.orangeAccent};
-    } else {
-      return {'text': '', 'color': Colors.transparent, 'border': Colors.grey.shade800};
-    }
+    
+    if (diff < 0) return {'text': 'Просрочено', 'color': Colors.redAccent, 'border': Colors.redAccent};
+    if (diff == 0) return {'text': 'Списание сегодня', 'color': Colors.orange, 'border': Colors.orange};
+    if (diff <= 3) return {'text': 'Скоро списание', 'color': Colors.orangeAccent, 'border': Colors.orangeAccent};
+    return {'text': '', 'color': Colors.transparent, 'border': Colors.grey.shade800};
   }
 
-  // ==================== UI: ДИАЛОГ ДОБАВЛЕНИЯ ====================
-  void _showAddSubscriptionDialog() {
+  void _showAddDialog() {
     final nameController = TextEditingController();
     final priceController = TextEditingController();
     DateTime? selectedDate;
@@ -195,13 +419,14 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                     TextField(
                       controller: nameController,
                       style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(labelText: 'Название', labelStyle: TextStyle(color: Colors.grey)),
+                      decoration: const InputDecoration(labelText: 'Название'),
                     ),
+                    const SizedBox(height: 12),
                     TextField(
                       controller: priceController,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(labelText: 'Цена', labelStyle: TextStyle(color: Colors.grey)),
+                      decoration: const InputDecoration(labelText: 'Цена'),
                     ),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
@@ -214,10 +439,7 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                           initialDate: DateTime.now().add(const Duration(days: 30)),
                           firstDate: DateTime.now(),
                           lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
-                          builder: (context, child) {
-                            // Делаем календарь тёмным
-                            return Theme(data: ThemeData.dark(), child: child!);
-                          },
+                          builder: (context, child) => Theme(data: ThemeData.dark(), child: child!),
                         );
                         if (picked != null) setDialogState(() => selectedDate = picked);
                       },
@@ -226,12 +448,22 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                 ),
               ),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена', style: TextStyle(color: Colors.grey))),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Отмена', style: TextStyle(color: Colors.grey)),
+                ),
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF21A038)),
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF21A038), foregroundColor: Colors.white),
                   onPressed: () {
-                    if (nameController.text.isEmpty || priceController.text.isEmpty || selectedDate == null) return;
-                    _addSubscription(nameController.text, double.tryParse(priceController.text) ?? 0.0, DateFormat('yyyy-MM-dd').format(selectedDate!));
+                    if (nameController.text.isEmpty || priceController.text.isEmpty || selectedDate == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Заполните все поля')));
+                      return;
+                    }
+                    _addSubscription(
+                      nameController.text,
+                      double.tryParse(priceController.text) ?? 0.0,
+                      DateFormat('yyyy-MM-dd').format(selectedDate!),
+                    );
                   },
                   child: const Text('Сохранить'),
                 ),
@@ -246,45 +478,45 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Мои подписки')),
+      appBar: AppBar(
+        title: Text('Привет, ${widget.username}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: widget.onLogout,
+            tooltip: 'Выйти из аккаунта',
+          ),
+        ],
+      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF21A038)))
-          : _errorMessage != null
-              ? Center(child: Text(_errorMessage!, style: const TextStyle(color: Colors.red)))
-              : RefreshIndicator(
-                  onRefresh: _loadSubscriptions,
-                  color: const Color(0xFF21A038),
-                  child: ListView(
-                    padding: const EdgeInsets.all(16),
-                    children: [
-                      // 1. СВОДНАЯ КАРТОЧКА (DASHBOARD)
-                      _buildSummaryCard(),
-                      const SizedBox(height: 20),
-                      
-                      // Заголовок списка
-                      const Padding(
-                        padding: EdgeInsets.only(left: 4, bottom: 8),
-                        child: Text('Активные сервисы', style: TextStyle(fontSize: 16, color: Colors.grey, fontWeight: FontWeight.w500)),
-                      ),
-
-                      // 2. СПИСОК ПОДПИСОК
-                      if (_subscriptions.isEmpty)
-                        const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('Список пуст', style: TextStyle(color: Colors.grey))))
-                      else
-                        ..._subscriptions.map((sub) => _buildSubscriptionCard(sub)).toList(),
-                      
-                      const SizedBox(height: 80), // Отступ снизу для FAB
-                    ],
+          : RefreshIndicator(
+              onRefresh: _loadSubscriptions,
+              color: const Color(0xFF21A038),
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  _buildSummaryCard(),
+                  const SizedBox(height: 20),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 4, bottom: 8),
+                    child: Text('Активные сервисы', style: TextStyle(fontSize: 16, color: Colors.grey, fontWeight: FontWeight.w500)),
                   ),
-                ),
+                  if (_subscriptions.isEmpty)
+                    const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('Список пуст', style: TextStyle(color: Colors.grey))))
+                  else
+                    ..._subscriptions.map((sub) => _buildCard(sub)).toList(),
+                  const SizedBox(height: 80),
+                ],
+              ),
+            ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _showAddSubscriptionDialog,
+        onPressed: _showAddDialog,
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  // ==================== ВИДЖЕТ: СВОДНАЯ КАРТОЧКА ====================
   Widget _buildSummaryCard() {
     return Container(
       width: double.infinity,
@@ -293,7 +525,6 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
         color: const Color(0xFF1E1E1E),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFF21A038).withOpacity(0.3), width: 1),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -325,8 +556,7 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     );
   }
 
-  // ==================== ВИДЖЕТ: КАРТОЧКА ПОДПИСКИ ====================
-  Widget _buildSubscriptionCard(Subscription sub) {
+    Widget _buildCard(Subscription sub) {
     final urgency = _getUrgencyStatus(sub.nextPaymentDate);
     final isUrgent = urgency['text'].isNotEmpty;
 
@@ -335,31 +565,30 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFF1E1E1E),
         borderRadius: BorderRadius.circular(12),
-        // Если срочно — красная/оранжевая рамка, иначе — тонкая серая
         border: Border.all(color: urgency['border'], width: isUrgent ? 1.5 : 1),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
           children: [
-            // Иконка с первой буквой
             CircleAvatar(
               radius: 24,
               backgroundColor: isUrgent ? urgency['color'].withOpacity(0.15) : const Color(0xFF21A038).withOpacity(0.15),
               child: Text(
                 sub.name[0].toUpperCase(),
-                style: TextStyle(color: isUrgent ? urgency['color'] : const Color(0xFF21A038), fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: isUrgent ? urgency['color'] : const Color(0xFF21A038),
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
             const SizedBox(width: 16),
-            
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(sub.name, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
-                  // Дата следующего списания
                   Row(
                     children: [
                       Icon(Icons.event, size: 14, color: Colors.grey.shade500),
@@ -367,7 +596,6 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                       Text(sub.nextPaymentDate, style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
                     ],
                   ),
-                  // Бейдж срочности (если есть)
                   if (isUrgent) ...[
                     const SizedBox(height: 6),
                     Container(
@@ -385,12 +613,13 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                 ],
               ),
             ),
-
-            // Цена и кнопка удаления
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text('\$${sub.price.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                Text(
+                  '\$${sub.price.toStringAsFixed(2)}',
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 8),
                 IconButton(
                   icon: const Icon(Icons.delete_outline, size: 20),

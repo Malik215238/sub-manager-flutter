@@ -1,92 +1,132 @@
 import sqlite3
 import os
 from flask import Flask, jsonify, request
-from flask_cors import CORS
+from flask_cors import CORS # Импортируем CORS
+from werkzeug.security import generate_password_hash, check_password_hash # Для безопасности паролей
 
 app = Flask(__name__)
-CORS(app)
+CORS(app) # Разрешаем запросы с любых источников (нужно для Flutter)
 
-# ==================== НАСТРОЙКА БАЗЫ ДАННЫХ ====================
-
-# Имя файла базы данных. Он будет создан в той же папке, где лежит app.py
 DB_NAME = 'subscriptions.db'
 
 def get_db_connection():
-    """
-    Создаёт и возвращает соединение с базой данных.
-    Включаем row_factory='sqlite3.Row', чтобы обращаться к колонкам по имени,
-    а не по индексу (например, row['name'] вместо row[1]).
-    """
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    """
-    Инициализирует базу данных: создаёт таблицу, если её ещё нет.
-    Вызывается один раз при запуске приложения.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # SQL-запрос на создание таблицы
-    # IF NOT EXISTS гарантирует, что ошибка не возникнет, если таблица уже есть
+    # 1. Создаём таблицу пользователей
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        )
+    ''')
+
+    # 2. Создаём таблицу подписок с привязкой к user_id
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             price REAL NOT NULL,
             status TEXT NOT NULL DEFAULT 'active',
-            next_payment_date TEXT NOT NULL
+            next_payment_date TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
         )
     ''')
     
     conn.commit()
     conn.close()
-    print("✅ База данных инициализирована (файл subscriptions.db)")
+    print("✅ База данных инициализирована")
 
-# Запускаем инициализацию сразу при старте скрипта
 init_db()
 
-# ==================== МАРШРУТЫ API ====================
+# ==================== АВТОРИЗАЦИЯ ====================
 
-# 1. GET: Получить все подписки из базы
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    if not username or not password:
+        return jsonify({"error": "Заполните все поля"}), 400
+
+    # Хешируем пароль перед сохранением (никогда не храним пароли в открытом виде!)
+    hashed_pw = generate_password_hash(password)
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', (username, hashed_pw))
+        conn.commit()
+        new_id = cursor.lastrowid
+        return jsonify({"user_id": new_id, "username": username}), 201
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Пользователь с таким именем уже существует"}), 409
+    finally:
+        conn.close()
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    conn = get_db_connection()
+    user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+    conn.close()
+
+    # Проверяем существование пользователя и совпадение хеша пароля
+    if user and check_password_hash(user['password_hash'], password):
+        return jsonify({"user_id": user['id'], "username": user['username']}), 200
+    
+    return jsonify({"error": "Неверный логин или пароль"}), 401
+
+# ==================== ПОДПИСКИ (С УЧЁТОМ USER_ID) ====================
+
 @app.route('/api/subscriptions', methods=['GET'])
 def get_subscriptions():
+    # Получаем user_id из параметров запроса (?user_id=1)
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"error": "Требуется user_id"}), 400
+
     conn = get_db_connection()
-    # Выбираем все колонки (*) из таблицы subscriptions
-    subscriptions = conn.execute('SELECT * FROM subscriptions').fetchall()
+    # Выбираем только подписки конкретного пользователя
+    subscriptions = conn.execute('SELECT * FROM subscriptions WHERE user_id = ?', (user_id,)).fetchall()
     conn.close()
     
-    # Превращаем объекты Row в обычные словари для JSON
     result = [dict(sub) for sub in subscriptions]
     return jsonify(result), 200
 
-# 2. POST: Добавить новую подписку в базу
 @app.route('/api/subscriptions', methods=['POST'])
 def add_subscription():
     data = request.get_json()
-    
-    if not data or not all(k in data for k in ("name", "price", "next_payment_date")):
+    # Обязательно требуем user_id, name, price и дату
+    required_fields = ["user_id", "name", "price", "next_payment_date"]
+    if not data or not all(k in data for k in required_fields):
         return jsonify({"error": "Неверные данные"}), 400
 
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Используем параметризованный запрос (?) для защиты от SQL-инъекций
     cursor.execute(
-        'INSERT INTO subscriptions (name, price, status, next_payment_date) VALUES (?, ?, ?, ?)',
-        (data["name"], float(data["price"]), "active", data["next_payment_date"])
+        'INSERT INTO subscriptions (user_id, name, price, status, next_payment_date) VALUES (?, ?, ?, ?, ?)',
+        (data["user_id"], data["name"], float(data["price"]), "active", data["next_payment_date"])
     )
     
     conn.commit()
-    
-    # Получаем ID только что добавленной записи
     new_id = cursor.lastrowid
     
-    # Формируем ответ точно в том же формате, что и раньше, чтобы Flutter не сломался
     new_sub = {
         "id": new_id,
+        "user_id": data["user_id"],
         "name": data["name"],
         "price": float(data["price"]),
         "status": "active",
@@ -96,27 +136,17 @@ def add_subscription():
     conn.close()
     return jsonify(new_sub), 201
 
-# 3. DELETE: Удалить подписку из базы по ID
 @app.route('/api/subscriptions/<int:sub_id>', methods=['DELETE'])
 def delete_subscription(sub_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Сначала проверяем, существует ли такая запись
-    cursor.execute('SELECT * FROM subscriptions WHERE id = ?', (sub_id,))
-    sub = cursor.fetchone()
-    
-    if sub is None:
-        conn.close()
-        return jsonify({"error": "Подписка не найдена"}), 404
-    
-    # Если существует — удаляем
+    # Удаляем по ID (в реальном проекте тут тоже стоит проверить user_id для безопасности)
     cursor.execute('DELETE FROM subscriptions WHERE id = ?', (sub_id,))
     conn.commit()
     conn.close()
     
-    return jsonify({"message": "Подписка успешно удалена"}), 200
+    return jsonify({"message": "Удалено"}), 200
 
 if __name__ == '__main__':
-    # host='0.0.0.0' обязателен для доступа из эмулятора Android
     app.run(host='0.0.0.0', port=5000, debug=True)
