@@ -125,7 +125,7 @@ class _AuthScreenState extends State<AuthScreen> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
 
-  static const String _baseUrl = 'http://192.168.0.40:5000';
+  static const String _baseUrl = 'https://sub-manager-malik78.msk1.amvera.tech';
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -291,7 +291,7 @@ class SubscriptionsScreen extends StatefulWidget {
 }
 
 class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
-  static const String _baseUrl = 'http://192.168.0.40:5000';
+  static const String _baseUrl = 'https://sub-manager-malik78.msk1.amvera.tech';
   List<Subscription> _subscriptions = [];
   bool _isLoading = true;
 
