@@ -43,7 +43,7 @@ class MyApp extends StatelessWidget {
           labelStyle: const TextStyle(color: Colors.grey),
         ),
       ),
-      home: const AuthWrapper(), // Точка входа: проверяем сессию
+      home: const AuthWrapper(),
     );
   }
 }
@@ -67,7 +67,6 @@ class _AuthWrapperState extends State<AuthWrapper> {
     _checkLoginStatus();
   }
 
-  // Проверяем, есть ли сохранённые данные пользователя
   Future<void> _checkLoginStatus() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -77,7 +76,6 @@ class _AuthWrapperState extends State<AuthWrapper> {
     });
   }
 
-  // Выход из аккаунта
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('user_id');
@@ -88,8 +86,6 @@ class _AuthWrapperState extends State<AuthWrapper> {
     });
   }
 
-  // ЭТОТ МЕТОД ВЫЗЫВАЕТСЯ ИЗ AuthScreen ПОСЛЕ УСПЕШНОГО ВХОДА
-  // Он перечитывает SharedPreferences и заставляет экран перерисоваться
   void _onAuthSuccess() {
     _checkLoginStatus();
   }
@@ -100,23 +96,21 @@ class _AuthWrapperState extends State<AuthWrapper> {
       return const Scaffold(body: Center(child: CircularProgressIndicator(color: Color(0xFF21A038))));
     }
 
-    // Если данные есть — показываем главный экран
     if (_userId != null && _username != null) {
       return SubscriptionsScreen(
         userId: _userId!,
         username: _username!,
         onLogout: _logout,
       );
-    } 
-    
-    // Если данных нет — показываем экран входа и передаём ему callback
+    }
+
     return AuthScreen(onAuthSuccess: _onAuthSuccess);
   }
 }
 
 // ==================== ЭКРАН ВХОДА / РЕГИСТРАЦИИ ====================
 class AuthScreen extends StatefulWidget {
-  final VoidCallback onAuthSuccess; // Callback для уведомления родителя об успехе
+  final VoidCallback onAuthSuccess;
 
   const AuthScreen({super.key, required this.onAuthSuccess});
 
@@ -131,7 +125,7 @@ class _AuthScreenState extends State<AuthScreen> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
 
-  static const String _baseUrl = 'http://10.0.2.2:5000';
+  static const String _baseUrl = 'http://192.168.0.40:5000';
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
@@ -151,19 +145,15 @@ class _AuthScreenState extends State<AuthScreen> {
 
       final data = jsonDecode(response.body);
 
-      // Проверяем успешный статус (200 для входа, 201 для регистрации)
       if (response.statusCode == 200 || response.statusCode == 201) {
-        // 1. Сохраняем данные в постоянную память телефона
         final prefs = await SharedPreferences.getInstance();
         await prefs.setInt('user_id', data['user_id'] as int);
         await prefs.setString('username', data['username'] as String);
 
-        // 2. Уведомляем AuthWrapper, что пора обновить экран
         if (mounted) {
           widget.onAuthSuccess();
         }
       } else {
-        // Показываем ошибку от сервера (например, "Пользователь уже существует")
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -174,7 +164,6 @@ class _AuthScreenState extends State<AuthScreen> {
         }
       }
     } catch (e) {
-      // Показываем ошибку сети
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -184,7 +173,6 @@ class _AuthScreenState extends State<AuthScreen> {
         );
       }
     } finally {
-      // Снимаем флаг загрузки, если виджет всё ещё в дереве
       if (mounted) {
         setState(() => _isLoading = false);
       }
@@ -209,7 +197,6 @@ class _AuthScreenState extends State<AuthScreen> {
                   style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Color(0xFF21A038)),
                 ),
                 const SizedBox(height: 40),
-                
                 TextFormField(
                   controller: _usernameController,
                   style: const TextStyle(color: Colors.white),
@@ -225,13 +212,11 @@ class _AuthScreenState extends State<AuthScreen> {
                   validator: (v) => v == null || v.isEmpty ? 'Введите пароль' : null,
                 ),
                 const SizedBox(height: 32),
-                
-                // ИСПРАВЛЕНИЕ 1: Явный белый цвет текста и жирный шрифт на зелёной кнопке
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF21A038),
-                    foregroundColor: Colors.white, // Гарантирует белый цвет текста
-                    textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), // Жирный шрифт
+                    foregroundColor: Colors.white,
+                    textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                     minimumSize: const Size(double.infinity, 50),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
@@ -245,7 +230,6 @@ class _AuthScreenState extends State<AuthScreen> {
                       : Text(_isLogin ? 'Войти' : 'Зарегистрироваться'),
                 ),
                 const SizedBox(height: 20),
-                
                 TextButton(
                   onPressed: () => setState(() => _isLogin = !_isLogin),
                   child: Text(
@@ -289,7 +273,7 @@ class Subscription {
   }
 }
 
-// ==================== ГЛАВНЫЙ ЭКРАН (С УЧЁТОМ USER_ID) ====================
+// ==================== ГЛАВНЫЙ ЭКРАН ====================
 class SubscriptionsScreen extends StatefulWidget {
   final int userId;
   final String username;
@@ -307,7 +291,7 @@ class SubscriptionsScreen extends StatefulWidget {
 }
 
 class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
-  static const String _baseUrl = 'http://10.0.2.2:5000';
+  static const String _baseUrl = 'http://192.168.0.40:5000';
   List<Subscription> _subscriptions = [];
   bool _isLoading = true;
 
@@ -320,7 +304,6 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
   Future<void> _loadSubscriptions() async {
     setState(() => _isLoading = true);
     try {
-      // ИСПРАВЛЕНИЕ 2: Передаём user_id в параметрах запроса
       final response = await http.get(Uri.parse('$_baseUrl/api/subscriptions?user_id=${widget.userId}'));
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
@@ -347,7 +330,7 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
         Uri.parse('$_baseUrl/api/subscriptions'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'user_id': widget.userId, // Привязываем подписку к текущему пользователю
+          'user_id': widget.userId,
           'name': name,
           'price': price,
           'next_payment_date': date,
@@ -385,14 +368,13 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     }
   }
 
-  // Логика расчёта сводки
   double get _totalAmount => _subscriptions.fold(0.0, (sum, item) => sum + item.price);
 
   Map<String, dynamic> _getUrgencyStatus(String dateStr) {
     final now = DateTime.now();
     final paymentDate = DateTime.parse(dateStr);
     final diff = paymentDate.difference(DateTime(now.year, now.month, now.day)).inDays;
-    
+
     if (diff < 0) return {'text': 'Просрочено', 'color': Colors.redAccent, 'border': Colors.redAccent};
     if (diff == 0) return {'text': 'Списание сегодня', 'color': Colors.orange, 'border': Colors.orange};
     if (diff <= 3) return {'text': 'Скоро списание', 'color': Colors.orangeAccent, 'border': Colors.orangeAccent};
@@ -426,7 +408,8 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
                       controller: priceController,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(labelText: 'Цена'),
+                      // Подсказка теперь с символом рубля
+                      decoration: const InputDecoration(labelText: 'Цена (₽)'),
                     ),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
@@ -517,6 +500,7 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     );
   }
 
+  // ==================== СВОДНАЯ КАРТОЧКА (с рублём) ====================
   Widget _buildSummaryCard() {
     return Container(
       width: double.infinity,
@@ -534,8 +518,9 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
+              // Знак рубля после суммы с пробелом
               Text(
-                '\$${_totalAmount.toStringAsFixed(2)}',
+                '${_totalAmount.toStringAsFixed(2)} ₽',
                 style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold),
               ),
               Container(
@@ -556,7 +541,8 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     );
   }
 
-    Widget _buildCard(Subscription sub) {
+  // ==================== КАРТОЧКА ПОДПИСКИ (с рублём) ====================
+  Widget _buildCard(Subscription sub) {
     final urgency = _getUrgencyStatus(sub.nextPaymentDate);
     final isUrgent = urgency['text'].isNotEmpty;
 
@@ -616,8 +602,9 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
+                // Знак рубля после суммы с пробелом
                 Text(
-                  '\$${sub.price.toStringAsFixed(2)}',
+                  '${sub.price.toStringAsFixed(2)} ₽',
                   style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
